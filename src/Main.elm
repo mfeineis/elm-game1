@@ -15,13 +15,53 @@ type alias Flags =
 
 main : Program Flags Model Msg
 main =
+    let
+        toCmd msg =
+            Task.perform identity (Task.succeed msg)
+
+        merge fx ( m1, cmds ) =
+            let
+                ( m2, newCmds ) =
+                    produce fx m1
+            in
+            ( m2, Cmd.batch [ cmds, newCmds ] )
+
+        update msg model =
+            case msg of
+                Fact fact ->
+                    ( apply fact model, Cmd.none )
+
+                Intent intent ->
+                    let
+                        ( facts, fxs ) =
+                            interpret intent model
+
+                        cmdsFromFacts =
+                            Cmd.map Fact (Cmd.batch (List.map toCmd facts))
+                    in
+                    List.foldl merge ( model, cmdsFromFacts ) fxs
+    in
     Browser.application
-        { init = init
+        { init =
+            \f u n ->
+                let
+                    ( m, fxs ) =
+                        init f u n
+                in
+                List.foldl merge ( m, Cmd.none ) fxs
         , onUrlRequest = Fact << LinkClicked
         , onUrlChange = Fact << UrlChanged
         , subscriptions = subscriptions
         , update = update
-        , view = view
+        , view =
+            \m ->
+                let
+                    { body, title } =
+                        view m
+                in
+                { title = title
+                , body = List.map (Html.map Intent) body
+                }
         }
 
 
@@ -38,11 +78,12 @@ type alias Model =
     }
 
 
-init : Flags -> Url -> Nav.Key -> ( Model, Cmd Msg )
+init : Flags -> Url -> Nav.Key -> ( Model, List Fx )
 init flags url navKey =
     ( { navKey = navKey
       }
-    , Task.perform (Fact << ViewportChanged) Browser.Dom.getViewport
+    , [ ObtainViewport
+      ]
     )
 
 
@@ -63,32 +104,27 @@ type Fact
     | WindowSizeChanged { width : Int, height : Int }
 
 
-update : Msg -> Model -> ( Model, Cmd Msg )
-update msg model =
-    case msg of
-        Fact fact ->
-            let
-                ( m, cmds ) =
-                    replay fact model
-            in
-            ( m, Cmd.map Fact cmds )
-
-        Intent intent ->
-            let
-                ( m, cmds ) =
-                    interpret intent model
-            in
-            ( m, Cmd.map Fact (Cmd.batch (List.map toCmd cmds)) )
+type Fx
+    = ObtainViewport
 
 
-replay : Fact -> Model -> ( Model, Cmd Fact )
-replay fact model =
-    ( model, Cmd.none )
-
-
-interpret : Intent -> Model -> ( Model, List Fact )
+interpret : Intent -> Model -> ( List Fact, List Fx )
 interpret intent model =
-    ( model, [] )
+    ( [], [] )
+
+
+apply : Fact -> Model -> Model
+apply fact model =
+    model
+
+
+produce : Fx -> Model -> ( Model, Cmd Msg )
+produce fx model =
+    case fx of
+        ObtainViewport ->
+            ( model
+            , Task.perform (Fact << ViewportChanged) Browser.Dom.getViewport
+            )
 
 
 
@@ -99,19 +135,10 @@ type Intent
     = None
 
 
-view : Model -> Browser.Document Msg
+view : Model -> Browser.Document Intent
 view model =
     { title = "Game1"
     , body =
         [ Html.text "Hello World!"
         ]
     }
-
-
-
--- Utils
-
-
-toCmd : msg -> Cmd msg
-toCmd msg =
-    Task.perform identity (Task.succeed msg)
